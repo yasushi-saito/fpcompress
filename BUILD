@@ -7,6 +7,7 @@ cc_binary(
         "dfcm_predictor.h",
         "last_value_predictor.h",
         "stride_predictor.h",
+        "zero_predictor.h",
         "main.cc",
         "type.h",
         "zstd.cc",

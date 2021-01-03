@@ -17,6 +17,7 @@
 #include "last_value_predictor.h"
 #include "dfcm_predictor.h"
 #include "stride_predictor.h"
+#include "zero_predictor.h"
 
 #define CHECK(cond)                                                            \
   if (!(cond)) {                                                               \
@@ -79,6 +80,8 @@ void Points(const std::string& src_path) {
   Run(std::unique_ptr<Compressor>(new ColumnarCompressor<double, DfcmPredictor<double>>("dfcm", 3)));
   Run(std::unique_ptr<Compressor>(
       new ColumnarCompressor<double, LastValuePredictor<double>>("lastvalue", 3)));
+  Run(std::unique_ptr<Compressor>(
+      new ColumnarCompressor<double, ZeroPredictor<double>>("zero", 3)));
 }
 
 void Scalars(const std::string&src_path) {
@@ -99,6 +102,7 @@ void Scalars(const std::string&src_path) {
   Run(std::unique_ptr<Compressor>(
       new ColumnarCompressor<double, DfcmPredictor<double>>("dfcm", 1)));
   Run(std::unique_ptr<Compressor>(new ColumnarCompressor<double, LastValuePredictor<double>>("lastvalue", 1)));
+  Run(std::unique_ptr<Compressor>(new ColumnarCompressor<double, ZeroPredictor<double>>("zero", 1)));
 }
 
 int main(int argc, char **argv) {

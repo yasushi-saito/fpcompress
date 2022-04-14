@@ -4,10 +4,9 @@
 
 #include <array>
 
-template<typename Value>
+template <typename Elem>
 class ZeroPredictor {
  public:
-  Value Encode(Value val) {
-    return 0;
-  }
+  using ElemType = Elem;
+  Elem Encode(Elem val) { return 0; }
 };

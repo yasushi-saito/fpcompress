@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package fpcompress;
+
+message ComboHeaderProto {
+  repeated ComboOutputHeaderProto output = 1;
+}
+
+message ComboOutputHeaderProto {
+  string name=1;
+}
+
+message ComboBlockProto {
+  repeated ComboOutputBlockProto output = 1;
+}
+
+message ComboOutputBlockProto {
+  int64 len = 1;
+}

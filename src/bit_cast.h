@@ -1,33 +1,40 @@
 #pragma once
-#include <iostream>
 #include <cstring>
+#include <iostream>
 #include <memory>
+#include <span>
+#include <type_traits>
 #include <vector>
-
-using Bytes = std::vector<uint8_t>;
-
-// Interface for generic compressor.
-class Compressor {
- public:
-  // Returns a human-readable name of this compressor. For logging only.
-  virtual std::string Name() const = 0;
-  // Compress the given sequence of bytes.
-  virtual Bytes Compress(const Bytes& data) = 0;
-  // Inverse of Compress.
-  virtual Bytes Decompress(const Bytes& data) = 0;
-};
-
-extern std::unique_ptr<Compressor> NewZstd();
 
 // Helper for bit-casting between a floating point number and a uint of the same
 // size.
-template<typename Value> class Bitcast;
+template <typename Value>
+class Bitcast;
 
-template <> class Bitcast<double> {
+// Cast the given value to a byte array.
+template <typename T>
+std::array<uint8_t, sizeof(T)> ToBytes(T v) {
+  static_assert(std::is_trivial<T>::value);
+  std::array<uint8_t, sizeof(T)> buf;
+  memcpy(&buf[0], &v, sizeof(v));
+  return buf;
+}
+
+// Cast the given byte array to a value.
+template <typename T>
+T FromBytes(std::span<const uint8_t> data) {
+  static_assert(std::is_trivial<T>::value);
+  T v;
+  memcpy(&v, data.data(), data.size());
+  return v;
+}
+
+template <>
+class Bitcast<double> {
  public:
   using Int = uint64_t;
   using Float = double;
-  static_assert(sizeof(Int)==sizeof(Float));
+  static_assert(sizeof(Int) == sizeof(Float));
 
   static Int ToInt(const uint8_t *buf) {
     Int iv;
@@ -53,11 +60,13 @@ template <> class Bitcast<double> {
   }
 };
 
-template <> class Bitcast<float> {
+template <>
+class Bitcast<float> {
+ public:
   using Int = uint32_t;
   using Float = float;
 
-  static_assert(sizeof(Int)==sizeof(Float));
+  static_assert(sizeof(Int) == sizeof(Float));
 
   static Int ToInt(const uint8_t *buf) {
     Int iv;
@@ -86,19 +95,12 @@ template <> class Bitcast<float> {
 // Fowler-Noll-Vo hash.
 //
 // https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
-inline size_t Fnv1aHash(const void* src, size_t n_bytes) {
+inline size_t Fnv1aHash(const void *src, size_t n_bytes) {
   static_assert(sizeof(size_t) == 8);
   size_t hash = 14695981039346656037u;
-  const unsigned char* data = static_cast<const unsigned char*>(src);
+  const unsigned char *data = static_cast<const unsigned char *>(src);
   for (size_t i = 0; i < n_bytes; ++i) {
     hash = (hash ^ data[i]) * 1099511628211u;
   }
   return hash;
 }
-
-
-#define CHECK(cond)                                                            \
-  if (!(cond)) {                                                               \
-    std::cerr << #cond << "\n";                                                \
-    abort();                                                                   \
-  }

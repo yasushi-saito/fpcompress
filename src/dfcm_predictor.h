@@ -11,7 +11,7 @@
 #include <array>
 #include <cstring>
 
-#include "type.h"
+#include "bit_cast.h"
 #include "parse.h"
 
 template <typename Elem>
@@ -42,6 +42,7 @@ class DfcmPredictor {
   }
 
  public:
+  using ElemType = Elem;
   // Called during compression. It provides the next value to compress.  It
   // returns value predicted for the next value. If the prediction is perfect,
   // the returned value is equal to dv itself.

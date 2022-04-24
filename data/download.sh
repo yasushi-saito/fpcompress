@@ -36,7 +36,7 @@ fi
 # rsim: 2,048 × 11,509 * 1d
 # astro_mhd: * 1d
 # astro_pt: 512 * 256 * 640 (3d)
-# wave: 512 × 512 × 512 (2d)
+# wave: 512 × 512 × 512 (3d)
 mkdir -p fabian
 (cd fabian
  for url in https://dps.uibk.ac.at/~fabian/datasets/rsim.f32.zst \

@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "bit_cast.h"
-#include "columnar.h"
+#include "columnar_stream.h"
 #include "dfcm_predictor.h"
 #include "fcntl.h"
 #include "last_value_predictor.h"

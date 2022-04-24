@@ -1,2 +1,4 @@
 bazel-*
 compile_commands.json
+*/*_test
+benchmark/benchmark

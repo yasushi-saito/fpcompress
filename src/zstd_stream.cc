@@ -1,5 +1,5 @@
 #include "zstd_stream.h"
-
+#include "const.h"
 #include <glog/logging.h>
 #include <zstd.h>
 
@@ -36,6 +36,7 @@ class ZstdCompressor : public OutputStream {
   std::string Name() const { return "zstdcompressor"; }
 
   void Append(std::span<const uint8_t> src) override {
+    if (src.empty()) return;
     if (outbuf_.size() < src.size()) {
       outbuf_.resize(src.size() + 256);
     }
@@ -55,16 +56,18 @@ class ZstdCompressor : public OutputStream {
   }
 
   void Flush() override {
-    ZSTD_outBuffer out = {.dst = &outbuf_[0], .size = outbuf_.size(), .pos = 0};
-    ZSTD_CHECK(ZSTD_flushStream(zstd_, &out));
-    if (out.pos > 0) {
-      out_->Append(ToSpan(out.dst, out.pos));
-      out.pos = 0;
+    for (;;) {
+      ZSTD_outBuffer out = {.dst = &outbuf_[0], .size = outbuf_.size(), .pos = 0};
+      auto ret = ZSTD_CHECK(ZSTD_flushStream(zstd_, &out));
+      if (out.pos > 0) {
+        out_->Append(ToSpan(out.dst, out.pos));
+        out.pos = 0;
+      }
+      if (ret == 0) break;
     }
   }
 
  private:
-  static constexpr int kBufSize = 4 << 20;
   ZSTD_CStream* zstd_;
   std::vector<uint8_t> outbuf_;
   std::unique_ptr<OutputStream> out_;

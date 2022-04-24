@@ -11,6 +11,22 @@
 template <typename Value>
 class Bitcast;
 
+// https://stackoverflow.com/questions/776508/best-practices-for-circular-shift-rotate-operations-in-c
+template <typename T>
+T RotateLeft(T n, T shift) {
+  const T mask = 8 * sizeof(T) - 1;
+
+  shift &= mask;
+  return (n << shift) | (n >> ((-shift) & mask));
+}
+
+template <typename T>
+T RotateRight(T n, T shift) {
+  const T mask = 8 * sizeof(T) - 1;
+  shift &= mask;
+  return (n >> shift) | (n << ((-shift) & mask));
+}
+
 // Cast the given value to a byte array.
 template <typename T>
 std::array<uint8_t, sizeof(T)> ToBytes(T v) {
@@ -58,6 +74,15 @@ class Bitcast<double> {
     memcpy(&dv, buf, sizeof(Int));
     return dv;
   }
+  static Int ToMonotonicInt(Float v) {
+    Int iv = ToInt(v);
+    if (iv & 0x8000000000000000UL) {
+      iv = ~iv;
+    } else {
+      iv |= 0x8000000000000000UL;
+    }
+    return iv;
+  }
 };
 
 template <>
@@ -89,6 +114,16 @@ class Bitcast<float> {
     Float dv;
     memcpy(&dv, buf, sizeof(Int));
     return dv;
+  }
+
+  static Int ToMonotonicInt(Float v) {
+    Int iv = ToInt(v);
+    if (iv & 0x80000000U) {
+      iv = ~iv;
+    } else {
+      iv |= 0x80000000U;
+    }
+    return iv;
   }
 };
 

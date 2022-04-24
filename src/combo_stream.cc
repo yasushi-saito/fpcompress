@@ -48,12 +48,11 @@ std::vector<std::unique_ptr<OutputStream>> ComboOutputStream::Init(
   return outs;
 }
 
-ComboOutputStream::~ComboOutputStream() {
-  NextBlock();
-}
+ComboOutputStream::~ComboOutputStream() { NextBlock(); }
 
 void ComboOutputStream::WriteProto(const google::protobuf::Message& p) {
   const auto data = p.SerializeAsString();
+  VLOG(1) << "Write proto: " << p.ShortDebugString();
   auto header = ToBytes(data.size());
   combo_out_->Append(std::span<const uint8_t>(header.data(), header.size()));
   combo_out_->Append(std::span<const uint8_t>(

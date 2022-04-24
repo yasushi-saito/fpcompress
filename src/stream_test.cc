@@ -5,11 +5,14 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <random>
 
-#include "absl/random/random.h"
 #include "absl/strings/str_format.h"
+#include "columnar_stream.h"
 #include "combo_stream.h"
+#include "const.h"
 #include "file_stream.h"
+#include "id_encoder.h"
 #include "memory_stream.h"
 #include "zstd_stream.h"
 
@@ -40,41 +43,60 @@ std::string ToString(const T& data) {
 
 namespace fpcompress {
 
-std::vector<uint8_t> RandomData() {
-  absl::BitGen bitgen;
-  size_t len = absl::Uniform(bitgen, 1, 2048);
-  std::vector<uint8_t> s;
-  for (int i = 0; i < len; i++) {
-    s.push_back(absl::Uniform(bitgen, 'a', 'z'));
-  }
-  return s;
-}
+class StreamTest : public testing::Test {
+ private:
+  int old_buf_size_ = -1;
+  std::mt19937 rnd_;
 
-void WriteRandomData(std::span<const uint8_t> data, OutputStream* out) {
-  absl::BitGen bitgen;
-  while (!data.empty()) {
-    int len = absl::Uniform<int>(bitgen, 1, data.size());
-    out->Append(data.subspan(0, len));
-    data = data.subspan(len);
+ public:
+  void SetUp() override {
+    old_buf_size_ = kBufSize;
+    rnd_ = std::mt19937(100);
   }
-}
+  void TearDown() override { kBufSize = old_buf_size_; }
 
-void ReadRandomData(std::span<const uint8_t> want, InputStream* in) {
-  absl::BitGen bitgen;
-  LOG(INFO) << "Read: " << want.size() << "b";
-  while (!want.empty()) {
-    int len = absl::Uniform<int>(bitgen, 1, want.size());
-    LOG(INFO) << "Read: len=" << len;
-    auto got = in->Read(len);
-    ASSERT_EQ(got.size(), len);
-    ASSERT_EQ(ToString(got), ToString(want.subspan(0, len)));
-    want = want.subspan(len);
+  // Generate a random number in range [min, max].
+  int UniformRandom(int min, int max) {
+    auto d = std::uniform_int_distribution<int>(min, max);
+    return d(rnd_);
   }
-  auto got = in->Read(1);
-  ASSERT_EQ(got.size(), 0);
-}
 
-TEST(StreamTest, FileInput) {
+  std::vector<uint8_t> RandomData() {
+    const int len = UniformRandom(1, 2048);
+    std::vector<uint8_t> s;
+    for (int i = 0; i < len; i++) {
+      s.push_back(UniformRandom('a', 'z'));
+    }
+    return s;
+  }
+
+  void WriteRandomData(std::span<const uint8_t> data, OutputStream* out) {
+    while (!data.empty()) {
+      int len = UniformRandom(1, data.size());
+      out->Append(data.subspan(0, len));
+      data = data.subspan(len);
+    }
+  }
+
+  void ReadRandomData(int seed, std::span<const uint8_t> want,
+                      InputStream* in) {
+    static int nn = 0;
+    VLOG(0) << "Read: " << want.size() << "b";
+    while (!want.empty()) {
+      int len = UniformRandom(1, want.size());
+      nn++;
+      VLOG(0) << "Read: len=" << len << " n=" << nn;
+      auto got = in->Read(len);
+      CHECK_EQ(got.size(), len);
+      ASSERT_EQ(ToString(got), ToString(want.subspan(0, len)));
+      want = want.subspan(len);
+    }
+    auto got = in->Read(1);
+    ASSERT_EQ(got.size(), 0);
+  }
+};
+
+TEST_F(StreamTest, FileInput) {
   auto want = ReadFile(kTestPath);
   {
     auto in = NewFileInputStream(kTestPath);
@@ -96,7 +118,7 @@ TEST(StreamTest, FileInput) {
   }
 }
 
-TEST(StreamTest, Memory) {
+TEST_F(StreamTest, Memory) {
   for (int rep = 0; rep < 10; rep++) {
     auto data = RandomData();
     std::vector<uint8_t> got;
@@ -108,12 +130,12 @@ TEST(StreamTest, Memory) {
     ASSERT_EQ(ToString(data), ToString(got));
     {
       auto in = NewMemoryInputStream(got);
-      ReadRandomData(data, in.get());
+      ReadRandomData(rep + 200, data, in.get());
     }
   }
 }
 
-TEST(StreamTest, FileInOut) {
+TEST_F(StreamTest, FileInOut) {
   const char* path = "/tmp/fileinout";
   for (int rep = 0; rep < 10; rep++) {
     auto data = RandomData();
@@ -124,16 +146,17 @@ TEST(StreamTest, FileInOut) {
     }
     {
       auto in = NewFileInputStream(path);
-      ReadRandomData(data, in.get());
+      ReadRandomData(rep + 200, data, in.get());
     }
   }
 }
 
-TEST(StreamTest, Zstd) {
+TEST_F(StreamTest, Zstd) {
   int n_lt = 0;
   int n_gt = 0;
   int n_eq = 0;
   for (int rep = 0; rep < 10; rep++) {
+    kBufSize = UniformRandom(100, 200);
     auto data = RandomData();
     std::vector<uint8_t> got;
     {
@@ -141,26 +164,54 @@ TEST(StreamTest, Zstd) {
       WriteRandomData(data, out.get());
       out->Flush();
     }
-    if (got.size() < data.size())
+    LOG(INFO) << "before=" << got.size() << " after=" << data.size();
+    if (got.size() < data.size()) {
       n_lt++;
-    else if (got.size() > data.size())
+    } else if (got.size() > data.size()) {
       n_gt++;
-    else
+    } else {
       n_eq++;
+    }
     {
       auto in = NewZstdDecompressor(NewMemoryInputStream(got));
-      ReadRandomData(data, in.get());
+      ReadRandomData(rep + 200, data, in.get());
     }
   }
   ASSERT_LT(n_gt, n_lt);
 }
 
-TEST(StreamTest, Combo) {
-  absl::BitGen bitgen;
+TEST_F(StreamTest, Columnar) {
+  std::vector<uint8_t> got;
+  using Elem = uint32_t;
+  const int tuple_size = UniformRandom(1, 4);
+  auto data = RandomData();
+  if (const auto rem = data.size() % (sizeof(Elem) * tuple_size); rem != 0) {
+    data.resize(data.size() - rem);
+  }
+  {
+    auto out = std::make_unique<ColumnarOutputStream<IdEncoder<Elem>>>(
+        "test", tuple_size,
+        [](int, const std::string&, std::unique_ptr<OutputStream> out) {
+          return out;
+        },
+        NewMemoryOutputStream(&got));
+    out->Append(data);
+  }
+  {
+    auto in = std::make_unique<ColumnarInputStream<IdEncoder<Elem>>>(
+        "test", tuple_size,
+        [](int, const std::string&, std::unique_ptr<InputStream> in) {
+          return in;
+        },
+        NewMemoryInputStream(got));
+    ReadRandomData(100, data, in.get());
+  }
+}
 
+TEST_F(StreamTest, Combo) {
   for (int rep = 0; rep < 10; rep++) {
-    const int n_shards = absl::Uniform(bitgen, 1, 5);
-    const int n_flushes = absl::Uniform(bitgen, 1, 5);
+    const int n_shards = UniformRandom(1, 5);
+    const int n_flushes = UniformRandom(1, 5);
     using Blob = std::vector<uint8_t>;
 
     std::vector<std::vector<Blob>> data(n_flushes);
@@ -210,7 +261,7 @@ TEST(StreamTest, Combo) {
       for (int i = 0; i < n_flushes; i++) {
         combo_in->NextBlock();
         for (int j = 0; j < n_shards; j++) {
-          ReadRandomData(data[i][j], inputs[j].get());
+          ReadRandomData(rep + 200 + i + j, data[i][j], inputs[j].get());
         }
       }
       ASSERT_EQ(combo_in->NextBlock(), nullptr);

@@ -6,20 +6,19 @@
 #include <string>
 #include <vector>
 
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 #include "glog/logging.h"
 #include "nlohmann/json.hpp"
-#include "src/columnar.h"
+#include "src/columnar_stream.h"
 #include "src/combo_stream.h"
 #include "src/dfcm_predictor.h"
 #include "src/file_stream.h"
-#include "src/last_value_predictor.h"
+#include "src/lorenzo_encoder.h"
 #include "src/memory_stream.h"
 #include "src/output_stream.h"
-#include "src/stride_predictor.h"
-#include "src/zero_predictor.h"
 #include "src/zstd_stream.h"
 
 enum DataType {
@@ -33,13 +32,15 @@ struct Dataset {
   std::string name;
   std::string path;
   DataType type;
-  int dim;
+  std::vector<int> dim;
+  int stride;
 };
 
 struct Result {
   std::string compressor;
   std::vector<std::string> args;
   std::shared_ptr<Dataset> ds;
+  bool ok;
   size_t raw_size;
   size_t compressed_size;
   absl::Duration duration;
@@ -99,42 +100,50 @@ std::vector<std::shared_ptr<Dataset>> kDatasets = {
         .name = "rsim.f32",
         .path = absl::StrFormat("%s/fabian/rsim.f32", kDataDir),
         .type = F32,
-        .dim = 1,
+        .dim = {11509, 2048},
+        .stride = 1,
     }),
     std::make_shared<Dataset>(Dataset{
         .name = "rsim.f64",
         .path = absl::StrFormat("%s/fabian/rsim.f64", kDataDir),
         .type = F64,
-        .dim = 1,
-    }),
-    std::make_shared<Dataset>(Dataset{
-        .name = "astro_mhd.f32",
-        .path = absl::StrFormat("%s/fabian/astro_mhd.f64", kDataDir),
-        .type = F64,
-        .dim = 1,
+        .dim = {11509, 2048},
+        .stride = 1,
     }),
     std::make_shared<Dataset>(Dataset{
         .name = "astro_pt.f32",
         .path = absl::StrFormat("%s/fabian/astro_pt.f32", kDataDir),
         .type = F32,
-        .dim = 3,
+        .dim = {640, 256, 512},
+        .stride = 1,
     }),
     std::make_shared<Dataset>(Dataset{
         .name = "astro_pt.f64",
         .path = absl::StrFormat("%s/fabian/astro_pt.f64", kDataDir),
         .type = F64,
-        .dim = 3,
+        .dim = {640, 256, 512},
+        .stride = 1,
     }),
-    std::make_shared<Dataset>(
-        Dataset{.name = "wave.f32",
-                .path = absl::StrFormat("%s/fabian/wave.f32", kDataDir),
-                .type = F32,
-                .dim = 2}),
-    std::make_shared<Dataset>(
-        Dataset{.name = "wave.f64",
-                .path = absl::StrFormat("%s/fabian/wave.f64", kDataDir),
-                .type = F64,
-                .dim = 2}),
+    std::make_shared<Dataset>(Dataset{
+        .name = "astro_mhd.f32",
+        .path = absl::StrFormat("%s/fabian/astro_mhd.f64", kDataDir),
+        .type = F64,
+        .stride = 1,
+    }),
+    std::make_shared<Dataset>(Dataset{
+        .name = "wave.f32",
+        .path = absl::StrFormat("%s/fabian/wave.f32", kDataDir),
+        .type = F32,
+        .dim = {512, 512, 512},
+        .stride = 1,
+    }),
+    std::make_shared<Dataset>(Dataset{
+        .name = "wave.f64",
+        .path = absl::StrFormat("%s/fabian/wave.f64", kDataDir),
+        .type = F64,
+        .dim = {512, 512, 512},
+        .stride = 1,
+    }),
 };
 
 size_t FileSize(const std::string &path) {
@@ -143,18 +152,49 @@ size_t FileSize(const std::string &path) {
   return st.st_size;
 }
 
+Result Fpzip(std::shared_ptr<Dataset> ds) {
+  if (ds->dim.empty() || ds->dim.size() > 3) {
+    return Result{.compressor = "fpzip", .ds = ds, .ok = false};
+  }
+  if (ds->type != F64 && ds->type != F32) {
+    return Result{.compressor = "fpzip", .ds = ds, .ok = false};
+  }
+  const char *kOutPath = "/tmp/testout";
+  auto argv = absl::StrFormat("fpzip -o %s -i %s", kOutPath, ds->path);
+  if (ds->type == F64) {
+    absl::StrAppend(&argv, " -t double");
+  }
+  absl::StrAppendFormat(&argv, " -%d", ds->dim.size());
+  for (auto dim : ds->dim) {
+    absl::StrAppendFormat(&argv, " %d", dim);
+  }
+  auto start = absl::Now();
+  LOG(INFO) << "Run: " << argv;
+  CHECK_EQ(system(argv.c_str()), 0);
+  auto end = absl::Now();
+  return Result{
+      .compressor = "fpzip",
+      .ds = ds,
+      .ok = true,
+      .raw_size = FileSize(ds->path),
+      .compressed_size = FileSize(kOutPath),
+      .duration = end - start,
+  };
+}
+
 Result ZstdCommand(std::shared_ptr<Dataset> ds, int level) {
   auto start = absl::Now();
   const char *kOutPath = "/tmp/testout";
-  std::string cmdline =
+  std::string argv =
       absl::StrFormat("zstd -f%d -o %s -f %s", level, kOutPath, ds->path);
-  LOG(INFO) << "Run: " << cmdline;
-  CHECK_EQ(system(cmdline.c_str()), 0);
+  LOG(INFO) << "Run: " << argv;
+  CHECK_EQ(system(argv.c_str()), 0);
   auto end = absl::Now();
   return Result{
       .compressor = "zstd",
       .args = {absl::StrFormat("%d", level)},
       .ds = ds,
+      .ok = true,
       .raw_size = FileSize(ds->path),
       .compressed_size = FileSize(kOutPath),
       .duration = end - start,
@@ -164,30 +204,59 @@ Result ZstdCommand(std::shared_ptr<Dataset> ds, int level) {
 Result ZstdColumnar(std::shared_ptr<Dataset> ds, int level) {
   std::vector<uint8_t> out;
   auto start = absl::Now();
-  /*
-  std::vector<fpcompress::ComboOutputStream::OutputSpec> spec(8);
-  for (int i = 0; i < spec.size(); i++) {
-    spec[i].name = absl::StrFormat("b%d", i);
-    spec[i].factory = [level](int index, const std::string &name,
-                              std::unique_ptr<fpcompress::OutputStream> out)
-        -> std::unique_ptr<fpcompress::OutputStream> {
-      return fpcompress::NewZstdCompressor(level, std::move(out));
-    };
+  std::unique_ptr<fpcompress::OutputStream> column_out;
+
+  auto MakeStream = [level, &out]<typename Encoder>(Encoder encoder) {
+    return std::make_unique<fpcompress::ColumnarOutputStream<Encoder>>(
+        "column", encoder, 1,
+        [level](int index, const std::string &name,
+                std::unique_ptr<fpcompress::OutputStream> out)
+            -> std::unique_ptr<fpcompress::OutputStream> {
+          return fpcompress::NewZstdCompressor(level, std::move(out));
+        },
+        fpcompress::NewMemoryOutputStream(&out));
+  };
+
+  switch (ds->type) {
+    case F64:
+      switch (ds->dim.size()) {
+        case 0:
+        case 1:
+          column_out = MakeStream(fpcompress::LorenzoEncoder1D<double>());
+          break;
+        case 2:
+          column_out = MakeStream(
+              fpcompress::LorenzoEncoder3D<double>(ds->dim[0], ds->dim[1]));
+          break;
+        case 3:
+          column_out = MakeStream(
+              fpcompress::LorenzoEncoder3D<double>(ds->dim[0], ds->dim[1]));
+          break;
+        default:
+          LOG(FATAL) << "unsupported dim: " << DatasetToJson(ds);
+      }
+      break;
+    case F32:
+      switch (ds->dim.size()) {
+        case 0:
+        case 1:
+          column_out = MakeStream(fpcompress::LorenzoEncoder1D<float>());
+          break;
+        case 2:
+          column_out = MakeStream(
+              fpcompress::LorenzoEncoder3D<float>(ds->dim[0], ds->dim[1]));
+          break;
+        case 3:
+          column_out = MakeStream(
+              fpcompress::LorenzoEncoder3D<float>(ds->dim[0], ds->dim[1]));
+          break;
+        default:
+          LOG(FATAL) << "unsupported dim: " << DatasetToJson(ds);
+      }
+      break;
+    default:
+      LOG(FATAL) << "Unsupported data type: " << ds->type;
   }
-  */
-  /*
-  auto combo_out = std::make_unique<fpcompress::ComboOutputStream>(
-  fpcompress::NewMemoryOutputStream(&out));
-      auto outputs = combo_out->Init(spec);*/
-  auto column_out =
-      std::make_unique<fpcompress::ColumnarOutputStream<ZeroPredictor<float>>>(
-          "column", 1,
-          [level](int index, const std::string &name,
-                  std::unique_ptr<fpcompress::OutputStream> out)
-              -> std::unique_ptr<fpcompress::OutputStream> {
-            return fpcompress::NewZstdCompressor(level, std::move(out));
-          },
-          fpcompress::NewMemoryOutputStream(&out));
   auto file_in = fpcompress::NewFileInputStream(ds->path);
   const int kBufSize = 4 << 20;
   for (;;) {
@@ -200,6 +269,7 @@ Result ZstdColumnar(std::shared_ptr<Dataset> ds, int level) {
   return Result{
       .compressor = "combo",
       .ds = ds,
+      .ok = true,
       .raw_size = FileSize(ds->path),
       .compressed_size = out.size(),
       .duration = end - start,
@@ -230,11 +300,19 @@ Result Zstd(std::shared_ptr<Dataset> ds, int level) {
 }
 
 int main(int argc, char **argv) {
-  auto r = ZstdColumnar(kDatasets[0], 3);
-  LOG(INFO) << ResultToJson(r) << " ratio: "
-            << static_cast<double>(r.raw_size) /
-                   static_cast<double>(r.compressed_size);
-  r = ZstdCommand(kDatasets[0], 3);
+  for (int i = 0; i < 4; i++) {
+    const auto &ds = kDatasets[i];
+    LOG(INFO) << "start: " << ds->name;
+    auto r = Fpzip(kDatasets[i]);
+    LOG(INFO) << ResultToJson(r) << " ratio: "
+              << static_cast<double>(r.raw_size) /
+                     static_cast<double>(r.compressed_size);
+    r = ZstdColumnar(kDatasets[i], 3);
+    LOG(INFO) << ResultToJson(r) << " ratio: "
+              << static_cast<double>(r.raw_size) /
+                     static_cast<double>(r.compressed_size);
+  }
+  auto r = ZstdCommand(kDatasets[0], 3);
   LOG(INFO) << ResultToJson(r) << " ratio:"
             << static_cast<double>(r.raw_size) /
                    static_cast<double>(r.compressed_size);
